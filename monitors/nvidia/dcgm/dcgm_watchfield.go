@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	dcgmapi "github.com/NVIDIA/go-dcgm/pkg/dcgm"
@@ -101,25 +100,20 @@ func handleFabricField(fv dcgmapi.FieldValue_v2) (*monitor.Condition, bool) {
 			Build()
 		return &c, true
 	case dcgmapi.DCGM_FI_DEV_FABRIC_HEALTH_MASK:
-		mask := fv.Int64()
-		// The mask packs several 2-bit sub-fields, each decoded as
-		// (mask >> shift) & widthMask following NVIDIA's
-		// DCGM_GPU_FABRIC_HEALTH_TEST macro. A non-zero mask is NOT sufficient
-		// to declare a fault: the boolean sub-fields encode 0=NotSupported,
-		// 1=True (fault asserted), 2=False (explicitly healthy), so a healthy
-		// GPU can report a non-zero mask (e.g. 0x80 decodes to
-		// access_timeout_recovery=False). Only the True/fault state of a
-		// sub-field is flagged; this is what eliminates the false positives
-		// from the previous "any non-zero mask is a fault" logic.
-		faults := fabricHealthMaskFaults(mask)
-		if len(faults) == 0 {
+		// Classification of the packed health mask lives in the pure Classify
+		// seam (classify.go), which decodes the sub-fields via the shared
+		// fabricHealthMaskFaults. A non-zero mask is NOT sufficient to declare a
+		// fault: the boolean sub-fields encode 0=NotSupported, 1=True (fault),
+		// 2=False (explicitly healthy), so a healthy GPU can report a non-zero
+		// mask (e.g. 0x80 decodes to access_timeout_recovery=False). Delegating
+		// here keeps the decode in one place and lets the spec-derived fixtures
+		// exercise the exact production path.
+		mask := uint64(fv.Int64())
+		conds := Classify(NormalizedSignals{FabricHealthMask: &mask})
+		if len(conds) == 0 {
 			return nil, true
 		}
-		c := reasons.NvidiaFabricError.
-			Builder().
-			Message(fmt.Sprintf("GPU fabric health mask 0x%x: %s", mask, strings.Join(faults, ", "))).
-			Build()
-		return &c, true
+		return &conds[0], true
 	default:
 		return nil, false
 	}
